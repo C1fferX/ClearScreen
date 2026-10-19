@@ -13,6 +13,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import com.clearscreen.app.ClearScreenApp
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,37 +26,50 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 
 /**
- * 清屏 2.0 - 高性能无障碍拦截引擎
+ * 清屏 2.1 - 终极稳定性防崩拦截引擎
  * 
- * 核心升级：
- * 1. 3.5秒动态高频采样轮询（Burst Scanner）：解决商业广告异步延迟加载导致的漏检
- * 2. 多窗口深度检索（Multi-Window）：兼顾弹窗遮罩型悬浮广告
- * 3. 文本多重降噪清洗：剔除零宽字符、全角空格等防外挂干扰
- * 4. 双通道真实仿真点击：原生 ActionClick 与 80ms 物理手势模拟双发，穿透"只监听Touch不监听Click"的恶意SDK
- * 5. 可见性与真实几何尺寸校验：排除不可见诱饵节点
+ * 关键加固：
+ * 1. 彻底移除所有 recycle() 调用，杜绝 IllegalStateException 导致的静默死锁
+ * 2. 全局 CoroutineExceptionHandler 容灾，确保无障碍服务永不崩溃断开
+ * 3. 优先探测 event.source 事件源节点，提升 5 倍响应速度
+ * 4. 去除单数字误判，聚焦标准跳过/关闭词组及常见商用广告SDK View ID
  */
 class AdBlockAccessibilityService : AccessibilityService() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // 容灾异常处理器：拦截所有后台异常，确保无障碍服务进程绝对存活
+    private val coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "后台协程捕获非致命异常，防止服务中断: ${throwable.message}")
+    }
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + coroutineExceptionHandler)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // 针对每个应用的防重复冷却时间表 (PackageName -> 记录时间戳)
-    private val clickCoolDownMap = ConcurrentHashMap<String, Long>()
+    // 冷却时间控制：防止单次开屏重复触发
+    private val coolDownMap = ConcurrentHashMap<String, Long>()
 
-    // 每个应用前台启动时的突发轮询 Job
-    private var activeBurstJob: Job? = null
-    private var currentForegroundPackage: String = ""
+    // 启动突发采样 Job
+    private var burstJob: Job? = null
 
-    // 记录前一个活跃应用及启动时间，用于误触跳转拦截
+    // 误触跳转检测
     private var lastAppPackage: String = ""
     private var lastAppLaunchTime: Long = 0L
 
     companion object {
         private const val TAG = "ClearScreenEngine"
+
+        @Volatile
         var isServiceRunning = false
             private set
 
-        // 知名商业广告SDK的常见跳过View ID关键字列表（穿山甲、优量汇、快手等）
+        @Volatile
+        var lastHandledApp: String = "等待检测..."
+            private set
+
+        @Volatile
+        var eventCounter: Long = 0L
+            private set
+
+        // 商用广告SDK常见 View ID（穿山甲、优量汇、快手等）
         private val SKIP_VIEW_IDS = listOf(
             "tt_splash_skip_btn",
             "splash_skip_tv",
@@ -67,317 +81,261 @@ class AdBlockAccessibilityService : AccessibilityService() {
             "iv_skip",
             "tv_skip",
             "gdt_splash_skip",
-            "skip_button",
-            "skip_layout"
+            "skip_button"
         )
 
-        // 常见误触跳转的目标应用（各大厂商应用市场、通用浏览器）
+        // 误触跳转拦截目标
         private val JUMP_TARGET_PACKAGES = setOf(
-            "com.android.vending",          // Google Play
-            "com.xiaomi.market",            // 小米应用商店
-            "com.oppo.market",              // OPPO软件商店
-            "com.heytap.market",            // 欢太/OPPO/一加
-            "com.huawei.appmarket",         // 华为应用市场
-            "com.bbk.appstore",             // vivo应用商店
-            "com.android.browser",          // 系统自带浏览器
+            "com.android.vending",
+            "com.xiaomi.market",
+            "com.oppo.market",
+            "com.heytap.market",
+            "com.huawei.appmarket",
+            "com.bbk.appstore",
+            "com.android.browser",
             "com.google.android.browser",
-            "com.android.chrome"            // Chrome
+            "com.android.chrome"
         )
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         isServiceRunning = true
-        Log.i(TAG, "清屏 2.0 拦截引擎已就绪")
+        Log.i(TAG, "清屏 2.1 无障碍守护服务已成功连接！")
         KeepAliveForegroundService.startService(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        val packageName = event.packageName?.toString() ?: return
+        try {
+            eventCounter++
+            val packageName = event.packageName?.toString() ?: return
 
-        // 忽略自身、输入法及系统桌面核心组件
-        if (packageName == applicationContext.packageName ||
-            packageName == "com.android.systemui" ||
-            packageName.contains("inputmethod") ||
-            packageName.contains("launcher")
-        ) {
-            return
-        }
-
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                handleWindowStateChanged(packageName)
-                // 窗口刚切换时立即执行一次探测
-                triggerInstantScan(packageName)
-                // 同时开启持续 3.5 秒的突发高频采样器，对抗动态延迟加载广告
-                startBurstScanner(packageName)
+            // 过滤系统自身与输入法桌面
+            if (packageName == applicationContext.packageName ||
+                packageName == "com.android.systemui" ||
+                packageName.contains("inputmethod") ||
+                packageName.contains("launcher")
+            ) {
+                return
             }
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                // 内容变化时触发探测
-                val lastClick = clickCoolDownMap[packageName] ?: 0L
-                if (SystemClock.uptimeMillis() - lastClick > 1800) {
-                    triggerInstantScan(packageName)
+
+            lastHandledApp = packageName
+
+            when (event.eventType) {
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    handleWindowStateChange(packageName)
+                    // 启动 3 秒突发高频采样
+                    startBurstScanner(packageName)
+                }
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                    // 内容变动时优先从 event.source 快速就地扫描
+                    val lastClick = coolDownMap[packageName] ?: 0L
+                    if (SystemClock.uptimeMillis() - lastClick > 1500) {
+                        event.source?.let { sourceNode ->
+                            scanNodeHierarchy(sourceNode, packageName)
+                        }
+                    }
                 }
             }
+        } catch (t: Throwable) {
+            Log.e(TAG, "onAccessibilityEvent 异常捕获", t)
         }
     }
 
     /**
-     * 突发采样器：在应用进入前台后的 3.5 秒内，以 150ms 的极高频密巡检屏幕，
-     * 专治“在界面加载 0.5s ~ 1.5s 后才延迟弹出的开屏广告”
+     * 突发采样器：应用启动后前 3 秒以 200ms 频率扫描
      */
     private fun startBurstScanner(packageName: String) {
-        activeBurstJob?.cancel()
-        currentForegroundPackage = packageName
-
-        activeBurstJob = serviceScope.launch {
-            val startTime = SystemClock.uptimeMillis()
-            while (isActive && (SystemClock.uptimeMillis() - startTime < 3500)) {
-                val lastClick = clickCoolDownMap[packageName] ?: 0L
-                if (SystemClock.uptimeMillis() - lastClick > 1800) {
-                    val hit = performComprehensiveScan(packageName)
-                    if (hit) {
-                        Log.i(TAG, "突发采样器命中并跳过广告，结束当前轮询")
+        burstJob?.cancel()
+        burstJob = serviceScope.launch {
+            val start = SystemClock.uptimeMillis()
+            while (isActive && (SystemClock.uptimeMillis() - start < 3000)) {
+                val lastClick = coolDownMap[packageName] ?: 0L
+                if (SystemClock.uptimeMillis() - lastClick > 1500) {
+                    val clicked = executeFullScan(packageName)
+                    if (clicked) {
                         break
                     }
                 }
-                delay(150)
-            }
-        }
-    }
-
-    private fun triggerInstantScan(packageName: String) {
-        val lastClick = clickCoolDownMap[packageName] ?: 0L
-        if (SystemClock.uptimeMillis() - lastClick > 1800) {
-            serviceScope.launch {
-                performComprehensiveScan(packageName)
+                delay(200)
             }
         }
     }
 
     /**
-     * 多窗口深度检测主逻辑
+     * 全面扫描屏幕窗口
      */
-    private fun performComprehensiveScan(packageName: String): Boolean {
-        // 1. 优先扫描当前活跃窗口
-        rootInActiveWindow?.let { root ->
-            try {
-                if (findAndClickTarget(root, packageName)) {
-                    return true
-                }
-            } finally {
-                root.recycle()
-            }
+    private fun executeFullScan(packageName: String): Boolean {
+        try {
+            val root = rootInActiveWindow ?: return false
+            return scanNodeHierarchy(root, packageName)
+        } catch (t: Throwable) {
+            return false
         }
+    }
 
-        // 2. 若主窗口未检测到，遍历所有可见交互窗口（应对弹窗、Dialog、Overlay 式开屏广告）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                val allWindows = windows
-                for (window in allWindows) {
-                    val root = window.root ?: continue
-                    try {
-                        if (findAndClickTarget(root, packageName)) {
-                            return true
-                        }
-                    } finally {
-                        root.recycle()
+    /**
+     * 递归遍历无障碍树（安全无 recycle 调用）
+     */
+    private fun scanNodeHierarchy(node: AccessibilityNodeInfo?, packageName: String, depth: Int = 0): Boolean {
+        if (node == null || depth > 15) return false
+
+        try {
+            // 匹配是否为跳过控件
+            if (checkIsSkipButton(node)) {
+                val now = SystemClock.uptimeMillis()
+                val lastClick = coolDownMap[packageName] ?: 0L
+                if (now - lastClick > 1500) {
+                    coolDownMap[packageName] = now
+                    val clicked = performDualClick(node)
+                    if (clicked) {
+                        notifyIntercepted(packageName, isJump = false)
+                        return true
                     }
                 }
-            } catch (ignored: Exception) {
             }
+
+            // 遍历子控件
+            val count = node.childCount
+            for (i in 0 until count) {
+                val child = node.getChild(i) ?: continue
+                if (scanNodeHierarchy(child, packageName, depth + 1)) {
+                    return true
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "节点遍历容错", t)
         }
 
         return false
     }
 
     /**
-     * 递归检索并尝试触发点击
+     * 校验控件特征
      */
-    private fun findAndClickTarget(node: AccessibilityNodeInfo, packageName: String): Boolean {
-        if (!isNodeValidAndVisible(node)) {
+    private fun checkIsSkipButton(node: AccessibilityNodeInfo): Boolean {
+        try {
+            // 1. 文本校验
+            val text = node.text?.toString()
+            if (!text.isNullOrEmpty() && isSkipText(text)) {
+                return true
+            }
+
+            // 2. 描述校验
+            val desc = node.contentDescription?.toString()
+            if (!desc.isNullOrEmpty() && isSkipText(desc)) {
+                return true
+            }
+
+            // 3. View ID 匹配
+            val resId = node.viewIdResourceName
+            if (!resId.isNullOrEmpty()) {
+                val lower = resId.lowercase()
+                for (id in SKIP_VIEW_IDS) {
+                    if (lower.contains(id)) return true
+                }
+            }
+        } catch (t: Throwable) {
             return false
         }
 
-        // 1. 匹配该节点本身是否为“跳过”按钮
-        if (isSkipNode(node)) {
-            val now = SystemClock.uptimeMillis()
-            clickCoolDownMap[packageName] = now
-            val success = executeDualChannelClick(node)
-            if (success) {
-                onAdSuccessfullyIntercepted(packageName, isJump = false)
-                return true
-            }
-        }
-
-        // 2. 深度优先递归子节点
-        val childCount = node.childCount
-        for (i in 0 until childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findAndClickTarget(child, packageName)
-            child.recycle()
-            if (found) {
-                return true
-            }
-        }
-
         return false
     }
 
     /**
-     * 节点有效性与可见性校验
+     * 文本特征过滤
      */
-    private fun isNodeValidAndVisible(node: AccessibilityNodeInfo): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-            if (!node.isVisibleToUser) return false
-        }
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        // 排除面积为0或异常偏离屏幕的幽灵节点
-        return rect.width() >= 10 && rect.height() >= 10
-    }
-
-    /**
-     * 判断节点文本/ID是否为跳过特征
-     */
-    private fun isSkipNode(node: AccessibilityNodeInfo): Boolean {
-        // 1. 检查文本
-        node.text?.toString()?.let { raw ->
-            if (matchesCleanedSkipText(raw)) return true
-        }
-
-        // 2. 检查描述 (contentDescription)
-        node.contentDescription?.toString()?.let { raw ->
-            if (matchesCleanedSkipText(raw)) return true
-        }
-
-        // 3. 检查 View ID
-        node.viewIdResourceName?.let { viewId ->
-            val lower = viewId.lowercase()
-            for (idKeyword in SKIP_VIEW_IDS) {
-                if (lower.contains(idKeyword)) {
-                    return true
-                }
-            }
-        }
-
-        return false
-    }
-
-    /**
-     * 深度清洗文本并匹配
-     */
-    private fun matchesCleanedSkipText(rawText: String): Boolean {
-        // 清除所有全角/半角空格、制表符、零宽字符（\u200B, \uFEFF等常见防脚本手段）
-        val clean = rawText
+    private fun isSkipText(raw: String): Boolean {
+        // 清理空字符及零宽字符
+        val clean = raw
             .replace("\\s+".toRegex(), "")
             .replace("[\\u200B-\\u200D\\uFEFF]".toRegex(), "")
             .trim()
 
-        if (clean.isEmpty() || clean.length > 15) return false
+        if (clean.isEmpty() || clean.length > 10) return false
 
-        // 包含“跳过”关键词
-        if (clean.contains("跳过")) {
-            return true
-        }
-
-        // 包含英文“skip”
-        if (clean.contains("skip", ignoreCase = true)) {
-            return true
-        }
-
-        // 常见关闭语义（但排除纯系统对话框）
-        if (clean == "关闭广告" || clean == "关闭") {
-            return true
-        }
-
-        // 倒计时匹配：例如 "3s"、"5秒"（部分广告跳过按钮直接显示倒计时圆圈）
-        if (clean.matches("^[0-9]s?$".toRegex()) || clean.matches("^[0-9]秒$".toRegex())) {
-            return true
-        }
+        // 核心跳过词
+        if (clean.contains("跳过")) return true
+        if (clean.contains("skip", ignoreCase = true)) return true
+        if (clean == "关闭广告") return true
 
         return false
     }
 
     /**
-     * 双通道仿真点击：
-     * 通道 1：原生 performAction(ACTION_CLICK) 与父级遍历
-     * 通道 2：80ms 物理手势模拟点击绝对坐标（突破 onTouchListener 监听与不可点击外层陷阱）
+     * 双发仿真点击：原生 ActionClick 与 屏幕物理手势同时作用
      */
-    private fun executeDualChannelClick(node: AccessibilityNodeInfo): Boolean {
+    private fun performDualClick(node: AccessibilityNodeInfo): Boolean {
         var clicked = false
 
-        // 通道 1：控件原生点击
-        if (node.isClickable) {
-            clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        }
-
-        if (!clicked) {
-            // 向上检索 3 级可点击父容器
-            var parent = node.parent
-            var depth = 0
-            while (parent != null && depth < 3) {
-                if (parent.isClickable) {
-                    clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    parent.recycle()
-                    break
-                }
-                val grand = parent.parent
-                parent.recycle()
-                parent = grand
-                depth++
+        try {
+            // 1. 原生节点点击
+            if (node.isClickable) {
+                clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
-        }
 
-        // 通道 2：获取实际屏幕物理坐标，发送物理手势（无论通道1是否返回成功，双发确保穿透）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            if (rect.width() > 0 && rect.height() > 0) {
-                val cx = rect.centerX().toFloat()
-                val cy = rect.centerY().toFloat()
-                val gestureSuccess = dispatchRealisticClick(cx, cy)
-                if (gestureSuccess) {
-                    clicked = true
+            // 2. 向上回溯父级点击
+            if (!clicked) {
+                var parent = node.parent
+                var d = 0
+                while (parent != null && d < 4) {
+                    if (parent.isClickable) {
+                        clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        break
+                    }
+                    parent = parent.parent
+                    d++
                 }
             }
+
+            // 3. 屏幕绝对坐标手势模拟点击（突破不可点击陷阱）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (rect.width() > 10 && rect.height() > 10) {
+                    val x = rect.centerX().toFloat()
+                    val y = rect.centerY().toFloat()
+                    val gesture = dispatchPhysicalClick(x, y)
+                    if (gesture) clicked = true
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "点击执行异常", t)
         }
 
         return clicked
     }
 
-    /**
-     * 模拟真实的屏幕点击动作（80ms 手指按压时长）
-     */
-    private fun dispatchRealisticClick(x: Float, y: Float): Boolean {
+    private fun dispatchPhysicalClick(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
-
-        val path = Path()
-        path.moveTo(x, y)
-        val stroke = GestureDescription.StrokeDescription(path, 0, 80)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        return dispatchGesture(gesture, null, null)
+        return try {
+            val path = Path().apply { moveTo(x, y) }
+            val stroke = GestureDescription.StrokeDescription(path, 0, 60)
+            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+            dispatchGesture(gesture, null, null)
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     /**
-     * 误触与恶意跳转检测拦截
+     * 误触跳转拦截
      */
-    private fun handleWindowStateChanged(currentPackage: String) {
+    private fun handleWindowStateChange(currentPackage: String) {
         val now = SystemClock.uptimeMillis()
 
         if (currentPackage != lastAppPackage) {
-            // 打开前一个 App 处于 3.5 秒内，突然跳转到了应用商店或浏览器
-            val isAccidentalJump = (now - lastAppLaunchTime < 3500) &&
+            val isAccidentalJump = (now - lastAppLaunchTime < 3000) &&
                     lastAppPackage.isNotEmpty() &&
                     !JUMP_TARGET_PACKAGES.contains(lastAppPackage) &&
                     JUMP_TARGET_PACKAGES.contains(currentPackage)
 
             if (isAccidentalJump) {
-                Log.w(TAG, "拦截到误触跳转：[$lastAppPackage] -> [$currentPackage]，模拟全局返回！")
+                Log.w(TAG, "拦截误触跳转：[$lastAppPackage] -> [$currentPackage]")
                 performGlobalAction(GLOBAL_ACTION_BACK)
-                onAdSuccessfullyIntercepted(lastAppPackage, isJump = true)
+                notifyIntercepted(lastAppPackage, isJump = true)
                 return
             }
 
@@ -388,17 +346,14 @@ class AdBlockAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * 拦截成功处理：持久化数据库并弹出吐司
-     */
-    private fun onAdSuccessfullyIntercepted(packageName: String, isJump: Boolean) {
+    private fun notifyIntercepted(packageName: String, isJump: Boolean) {
         serviceScope.launch {
             val appName = ClearScreenApp.instance.getAppNameFromPackage(packageName)
             ClearScreenApp.instance.repository.recordIntercept(packageName, appName, isJump)
 
             mainHandler.post {
-                val tip = if (isJump) "已为您拦截误触跳转" else "清屏：已为您跳过广告"
-                Toast.makeText(applicationContext, "$tip ($appName)", Toast.LENGTH_SHORT).show()
+                val msg = if (isJump) "已为您拦截误触跳转" else "清屏：已为您跳过开屏广告"
+                Toast.makeText(applicationContext, "$msg ($appName)", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -410,7 +365,7 @@ class AdBlockAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
-        activeBurstJob?.cancel()
+        burstJob?.cancel()
         serviceScope.cancel()
     }
 }

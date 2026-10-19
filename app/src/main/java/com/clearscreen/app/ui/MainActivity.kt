@@ -134,6 +134,7 @@ class MainActivity : AppCompatActivity() {
             binding.tvServiceStatus.text = "无障碍服务：运行中（守护开启）"
             binding.btnToggleAccessibility.text = "已启用"
             binding.btnToggleAccessibility.isEnabled = false
+            binding.tvServiceDesc.text = "无障碍运行正常 | 事件心跳计数: ${AdBlockAccessibilityService.eventCounter} | 最近检测: ${AdBlockAccessibilityService.lastHandledApp}"
 
             // 确保前台服务运行中
             KeepAliveForegroundService.startService(this)
@@ -142,6 +143,7 @@ class MainActivity : AppCompatActivity() {
             binding.tvServiceStatus.text = "无障碍服务：未开启"
             binding.btnToggleAccessibility.text = "去开启"
             binding.btnToggleAccessibility.isEnabled = true
+            binding.tvServiceDesc.text = "需开启无障碍服务以实时检测跳过按钮并自动点击。Android 13+ 需先在应用信息允许受限制设置。"
         }
 
         if (isBatteryIgnored) {
