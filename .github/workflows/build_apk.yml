@@ -30,9 +30,19 @@ jobs:
         gradle-version: 8.6
 
     - name: Build Debug APK
-      run: gradle assembleDebug --stacktrace
+      run: |
+        gradle assembleDebug --stacktrace 2>&1 | tee build_log.txt
+
+    - name: Write Summary on Failure
+      if: failure()
+      run: |
+        echo "### Build Failed - Tail log:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        tail -n 80 build_log.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
 
     - name: Upload Debug APK Artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ClearScreen-APK
