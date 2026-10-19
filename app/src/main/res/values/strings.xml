@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">清屏</string>
+    <string name="accessibility_service_label">清屏 - 广告自动拦截服务</string>
+    <string name="accessibility_service_description">用于实时识别开屏广告的跳过按钮并自动点击，拦截恶意误触跳转，守护您的屏幕清爽。</string>
+    
+    <string name="service_running">守护中</string>
+    <string name="service_stopped">未开启</string>
+    <string name="total_intercepted">累计拦截</string>
+    <string name="times_unit">次</string>
+    <string name="grant_accessibility">启用无障碍服务</string>
+    <string name="grant_battery_opt">加入电池白名单</string>
+    <string name="grant_autostart">设置自启动与后台锁定</string>
+    <string name="app_stats_title">各应用拦截统计</string>
+    <string name="empty_stats">暂无拦截记录，开启服务后打开其他App体验</string>
+    <string name="last_intercept">最近拦截: %1$s</string>
+    <string name="notification_title">清屏服务运行中</string>
+    <string name="notification_content">已为您累计拦截 %1$d 次开屏与误触广告</string>
+    <string name="reset_stats">重置统计</string>
+</resources>
