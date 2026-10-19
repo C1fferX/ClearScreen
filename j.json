@@ -1,0 +1,121 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 117986893768,
+      "run_id": 39230456655,
+      "workflow_name": "Build ClearScreen APK",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/C1fferX/ClearScreen/actions/runs/39230456655",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVPU0os8AAAAbeJEfyA",
+      "head_sha": "87c1b470cf4a5aac05ef2db33abf5994645e7147",
+      "url": "https://api.github.com/repos/C1fferX/ClearScreen/actions/jobs/117986893768",
+      "html_url": "https://github.com/C1fferX/ClearScreen/actions/runs/39230456655/job/117986893768",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-19T09:29:33Z",
+      "started_at": "2026-10-19T09:29:36Z",
+      "completed_at": "2026-10-19T09:31:06Z",
+      "name": "build",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-19T09:29:36Z",
+          "completed_at": "2026-10-19T09:29:39Z"
+        },
+        {
+          "name": "Checkout Code",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-19T09:29:39Z",
+          "completed_at": "2026-10-19T09:29:40Z"
+        },
+        {
+          "name": "Set up JDK 17",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-19T09:29:40Z",
+          "completed_at": "2026-10-19T09:29:40Z"
+        },
+        {
+          "name": "Setup Android SDK Environment",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-19T09:29:40Z",
+          "completed_at": "2026-10-19T09:29:48Z"
+        },
+        {
+          "name": "Setup Gradle",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-19T09:29:48Z",
+          "completed_at": "2026-10-19T09:29:51Z"
+        },
+        {
+          "name": "Build Debug APK",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-19T09:29:51Z",
+          "completed_at": "2026-10-19T09:30:58Z"
+        },
+        {
+          "name": "Upload Debug APK Artifact",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-19T09:30:58Z",
+          "completed_at": "2026-10-19T09:30:59Z"
+        },
+        {
+          "name": "Post Setup Gradle",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-10-19T09:30:59Z",
+          "completed_at": "2026-10-19T09:31:03Z"
+        },
+        {
+          "name": "Post Set up JDK 17",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-10-19T09:31:03Z",
+          "completed_at": "2026-10-19T09:31:03Z"
+        },
+        {
+          "name": "Post Checkout Code",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-10-19T09:31:03Z",
+          "completed_at": "2026-10-19T09:31:03Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-10-19T09:31:03Z",
+          "completed_at": "2026-10-19T09:31:03Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/C1fferX/ClearScreen/check-runs/117986893768",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000000003,
+      "runner_name": "GitHub Actions 1000000003",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ]
+}
