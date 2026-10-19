@@ -32,17 +32,7 @@ jobs:
     - name: Build Debug APK
       run: |
         set -e -o pipefail
-        gradle :app:assembleDebug --stacktrace 2>&1 | tee build_log.txt
-
-    - name: Print Build Log to Step Summary
-      if: always()
-      run: |
-        if [ -f build_log.txt ]; then
-          echo "### Gradle Build Log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 150 build_log.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
+        gradle :app:assembleDebug --stacktrace
 
     - name: Upload Debug APK Artifact
       uses: actions/upload-artifact@v4
